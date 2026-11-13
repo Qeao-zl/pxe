@@ -1,0 +1,8 @@
+# normalize line endings
+* text=auto eol=lf
+
+# binaries
+*.png binary
+*.zip binary
+*.exe binary
+*.iso binary
