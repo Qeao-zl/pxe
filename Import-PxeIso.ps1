@@ -166,7 +166,27 @@ menuentry '$label' --class linux {
 }
 
 # ---------- rebuild grub.cfg ----------
-$header = @'
+# Prefer PxeLib: it rebuilds the menu from disk and keeps the AUTO / kickstart
+# entries (and the default index) that the console sets up.
+$menuDone = $false
+$libPath = Join-Path $PxeRoot 'lib\PxeLib.ps1'
+if (Test-Path $libPath) {
+    try {
+        $__savedIp   = $ServerIp
+        $__savedRoot = $PxeRoot
+        . $libPath
+        $menu = Update-GrubMenu
+        $ServerIp = $__savedIp
+        $PxeRoot  = $__savedRoot
+        Write-Host "menu rebuilt by PxeLib: $($menu.Path)  entries=$($menu.Count)  default=#$($menu.Default + 1)"
+        $menuDone = $true
+    } catch {
+        Write-Warning "PxeLib menu rebuild failed, falling back: $($_.Exception.Message)"
+    }
+}
+
+if (-not $menuDone) {
+    $header = @'
 set default=0
 set timeout=60
 set gfxmode=auto
@@ -175,18 +195,19 @@ insmod all_video
 
 '@
 
-$body = ($entries | ForEach-Object { $_.Entry }) -join "`n"
-$footer = @"
+    $body = ($entries | ForEach-Object { $_.Entry }) -join "`n"
+    $footer = @"
 
 menuentry '--- reboot ---' {
     reboot
 }
 "@
 
-$cfg = $header + $body + $footer
-Set-Content -Path $cfgPath -Value $cfg -Encoding ASCII
-Copy-Item $cfgPath (Join-Path $tftpRoot 'EFI\BOOT\grub.cfg') -Force
-Copy-Item $cfgPath (Join-Path $tftpRoot 'grub.cfg') -Force
+    $cfg = $header + $body + $footer
+    Set-Content -Path $cfgPath -Value $cfg -Encoding ASCII
+    Copy-Item $cfgPath (Join-Path $tftpRoot 'EFI\BOOT\grub.cfg') -Force
+    Copy-Item $cfgPath (Join-Path $tftpRoot 'grub.cfg') -Force
+}
 
 # ---------- 补齐 IIS 的 MIME 映射（.treeinfo/.zst/.discinfo 等默认 404）----------
 try {
