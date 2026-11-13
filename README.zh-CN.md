@@ -146,6 +146,34 @@ cd C:\PXE
 
 ---
 
+## 多架构并存
+
+菜单里每一项都带上了它真正能启动的架构标签：
+
+```
+[ARM64] Kylin Linux Advanced Server-V10 [V10]
+[x64]   Kylin Linux Advanced Server-V10 [V10]
+[ARM64] openEuler-22.03-LTS-SP3 [22.03-LTS-SP3]
+[ARM64] openEuler-24.03-LTS-SP3 [24.03-LTS-SP3]
+```
+
+Windows DHCP **每个作用域只能下发一个引导文件**。按客户端架构分流需要 `option 93`，而 Windows DHCP
+不把它暴露给策略 —— 它的 VendorClass 条件只能匹配服务器上**预先定义的精确类**，`PXEClient:Arch:00011*`
+这种通配永远匹配不上。这是平台限制，不是配置问题。
+
+| 场景 | 做法 |
+|---|---|
+| 同一时间只装一种架构 | 用该架构点「生成 ks 并应用」，控制台会把 `option 67` 切成 `grubaa64.efi` 或 `grubx64.efi` |
+| ARM64 与 x64 在同一网段同时装机 | 分 VLAN / 分作用域，或前面挂一台 Linux `dnsmasq`（`dhcp-match=set:efi-arm64,option:client-arch,11`） |
+
+不开界面手动切：
+
+```powershell
+Set-DhcpServerv4OptionValue -ScopeId 10.0.0.0 -OptionId 67 -Value grubx64.efi
+```
+
+---
+
 ## 控制台
 
 <p align="center"><img src="docs/screenshot.png" alt="PXE 控制台" width="820"></p>

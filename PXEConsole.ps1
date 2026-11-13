@@ -374,7 +374,12 @@ function Write-Log([string]$msg) {
 function Update-Status {
     try {
         $s = Get-PxeStatus
-        $lblStatus.Text = "DHCP=$($s.Dhcp)  IIS=$($s.Iis)  Site=$($s.Site)  TFTP=$($s.Tftp)"
+        $nbpArch = switch -Regex ($s.BootFile) {
+            'aa64'  { 'ARM64' }
+            'x64'   { 'x64' }
+            default { '?' }
+        }
+        $lblStatus.Text = "DHCP=$($s.Dhcp)  IIS=$($s.Iis)  Site=$($s.Site)  TFTP=$($s.Tftp)  NBP=$($s.BootFile)($nbpArch)"
         $lblStatus.ForeColor = if ($s.Dhcp -eq 'Running' -and $s.Site -eq 'Started' -and $s.Tftp -like 'running*') {
             [System.Drawing.Color]::DarkGreen
         } else { [System.Drawing.Color]::Firebrick }

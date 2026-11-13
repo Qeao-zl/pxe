@@ -293,7 +293,12 @@ function Update-GrubMenu {
     $entries = New-Object System.Collections.ArrayList
 
     foreach ($os in $osList) {
-        $label = "$($os.Name) [$($os.Version)]"
+        $archTag = switch (Get-ArchNorm $os.Arch) {
+            'arm64' { 'ARM64' }
+            'x64'   { 'x64' }
+            default { '???' }
+        }
+        $label = "[$archTag] $($os.Name) [$($os.Version)]"
         $e = @"
 menuentry '$label' --class linux {
     linuxefi /images/$($os.Slug)/vmlinuz inst.repo=$($os.HttpBase) ip=dhcp rd.neednet=1 inst.lang=zh_CN.UTF-8 console=tty0

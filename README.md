@@ -146,6 +146,35 @@ For every ISO the script will:
 
 ---
 
+## Multi-architecture
+
+Every GRUB entry is tagged with the architecture it can actually boot:
+
+```
+[ARM64] Kylin Linux Advanced Server-V10 [V10]
+[x64]   Kylin Linux Advanced Server-V10 [V10]
+[ARM64] openEuler-22.03-LTS-SP3 [22.03-LTS-SP3]
+[ARM64] openEuler-24.03-LTS-SP3 [24.03-LTS-SP3]
+```
+
+Windows DHCP can hand out **one boot file per scope**. Dispatching on the client architecture would need
+`option 93`, which Windows DHCP does not expose to policies — its vendor-class condition only matches
+classes pre-registered on the server, so `PXEClient:Arch:00011*` can never match. That is a platform
+limit, not a configuration problem.
+
+| Situation | Approach |
+|---|---|
+| One architecture being provisioned at a time | Press **Build ks and apply** with that architecture; the console flips `option 67` to `grubaa64.efi` or `grubx64.efi` |
+| ARM64 and x64 machines on the same wire at once | Separate VLANs / scopes, or put a small Linux `dnsmasq` in front (`dhcp-match=set:efi-arm64,option:client-arch,11`) |
+
+Manual switch, no GUI:
+
+```powershell
+Set-DhcpServerv4OptionValue -ScopeId 10.0.0.0 -OptionId 67 -Value grubx64.efi
+```
+
+---
+
 ## Console
 
 <p align="center"><img src="docs/screenshot.png" alt="PXE Console" width="820"></p>
