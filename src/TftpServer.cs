@@ -57,13 +57,18 @@ class Tftp
             catch { continue; }
             if (pkt.Length < 4) continue;
             int op = (pkt[0] << 8) | pkt[1];
-            if (op != 1) continue; // 只处理读请求
+            if (op != 1 && op != 2) continue;
 
             byte[] body = pkt;
             IPEndPoint rem = remote;
+            int opcode = op;
             ThreadPool.QueueUserWorkItem(delegate(object o)
             {
-                try { Handle(body, rem); }
+                try
+                {
+                    if (opcode == 1) Handle(body, rem);
+                    else HandleWrite(body, rem);
+                }
                 catch (Exception ex) { Log("ERR " + ex.GetType().Name + " " + ex.Message); }
             });
         }
@@ -103,15 +108,124 @@ class Tftp
         return b.ToArray();
     }
 
+    static void SendError(IPEndPoint remote, ushort code, string msg)
+    {
+        try
+        {
+            using (UdpClient s = new UdpClient(new IPEndPoint(IPAddress.Any, 0)))
+            {
+                byte[] body = Encoding.ASCII.GetBytes(msg);
+                byte[] pkt = new byte[4 + body.Length + 1];
+                pkt[0] = 0; pkt[1] = 5;
+                pkt[2] = (byte)(code >> 8); pkt[3] = (byte)(code & 0xFF);
+                Buffer.BlockCopy(body, 0, pkt, 4, body.Length);
+                pkt[pkt.Length - 1] = 0;
+                s.Send(pkt, pkt.Length, remote);
+            }
+        }
+        catch { }
+    }
+
+    // Kylin's "trusted boot" GRUB writes a measurement log over TFTP before booting.
+    // Only these names may be written, everything else stays read-only.
+    static readonly string[] WritableNames = { ".bimalog", ".libkytrusted-security.conf", ".bimalog.bak" };
+
+    static bool IsWritable(string file)
+    {
+        string n = Path.GetFileName(file.Replace('\\', '/'));
+        foreach (string w in WritableNames)
+        {
+            if (n.Equals(w, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
+    static void HandleWrite(byte[] pkt, IPEndPoint remote)
+    {
+        string file;
+        ParseRequest(pkt, out file);
+
+        string path = Resolve(file);
+        if (path == null || !IsWritable(file))
+        {
+            Log("WRQ-DENY " + file);
+            SendError(remote, 2, "Access violation");
+            return;
+        }
+
+        UdpClient sock = new UdpClient(new IPEndPoint(IPAddress.Any, 0));
+        sock.Client.ReceiveTimeout = 4000;
+        try
+        {
+            sock.Connect(remote);
+            byte[] ack0 = { 0, 4, 0, 0 };
+            sock.Send(ack0, ack0.Length);
+
+            long total = 0;
+            using (FileStream fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read))
+            {
+                ushort block = 1;
+                while (true)
+                {
+                    IPEndPoint ep = new IPEndPoint(IPAddress.Any, 0);
+                    byte[] data;
+                    try { data = sock.Receive(ref ep); }
+                    catch (SocketException) { Log("WRQ-TIMEOUT " + file + " block=" + block); break; }
+
+                    if (data.Length < 4) break;
+                    if (((data[0] << 8) | data[1]) != 3) break;
+
+                    int b = (data[2] << 8) | data[3];
+                    byte[] ack = new byte[] { 0, 4, (byte)(b >> 8), (byte)(b & 0xFF) };
+                    if (b == block)
+                    {
+                        int n = data.Length - 4;
+                        fs.Write(data, 4, n);
+                        total += n;
+                        sock.Send(ack, ack.Length);
+                        block++;
+                        if (n < 512) break;
+                    }
+                    else
+                    {
+                        sock.Send(ack, ack.Length); // duplicate, re-ack
+                    }
+                }
+            }
+            Log("WRQ-DONE " + file + " bytes=" + total);
+        }
+        catch (Exception ex) { Log("WRQ-ERR " + file + " " + ex.Message); }
+        finally { try { sock.Close(); } catch { } }
+    }
+
     static void Handle(byte[] pkt, IPEndPoint remote)
     {
         string file;
         List<string> opts = ParseRequest(pkt, out file);
 
         string path = Resolve(file);
-        if (path == null) { Log("BADNAME " + file); return; }
+        if (path == null) { Log("BADNAME " + file); SendError(remote, 1, "File not found"); return; }
+
         FileInfo fi = new FileInfo(path);
-        if (!fi.Exists) { Log("NOTFOUND " + file); return; }
+        if (!fi.Exists)
+        {
+            // GRUB probes /grub.cfg-<mac>, /grub.cfg-<ip>, /grub.cfg-<prefix>... before the plain
+            // /grub.cfg. Answer those probes with the main menu so the client gets a menu instead
+            // of hanging in a retry loop (which looks like a black screen).
+            string baseName = Path.GetFileName(path);
+            if (baseName.StartsWith("grub.cfg-", StringComparison.OrdinalIgnoreCase))
+            {
+                string alias = Path.Combine(root, "grub.cfg");
+                if (File.Exists(alias))
+                {
+                    Log("ALIAS " + file + " -> grub.cfg");
+                    path = alias;
+                    fi = new FileInfo(alias);
+                }
+            }
+        }
+
+        if (!fi.Exists) { Log("NOTFOUND " + file); SendError(remote, 1, "File not found"); return; }
 
         int blksize = 512;
         bool needOack = false;
@@ -144,7 +258,7 @@ class Tftp
         }
 
         UdpClient sock = new UdpClient(new IPEndPoint(IPAddress.Any, 0));
-        sock.Client.ReceiveTimeout = 6000;
+        sock.Client.ReceiveTimeout = 2000;
         try
         {
             sock.Connect(remote);
@@ -178,7 +292,7 @@ class Tftp
                     if (n < blksize) break;
                 }
             }
-            Log("DONE " + file + " bytes=" + total + " blk=" + blksize + " client=" + remote);
+            if (total >= 65536) Log("DONE " + file + " bytes=" + total + " blk=" + blksize + " client=" + remote);
         }
         finally
         {
@@ -188,7 +302,7 @@ class Tftp
 
     static bool SendAndWaitAck(UdpClient sock, byte[] data, int expectBlock)
     {
-        for (int attempt = 0; attempt < 6; attempt++)
+        for (int attempt = 0; attempt < 12; attempt++)
         {
             try { sock.Send(data, data.Length); }
             catch (Exception ex) { Log("SEND-ERR " + ex.Message); return false; }

@@ -165,7 +165,7 @@ $lblHint.ForeColor = [System.Drawing.Color]::DimGray
 
 # ---------------- 分区 ----------------
 $rbAutoDisk = New-Object System.Windows.Forms.RadioButton
-$rbAutoDisk.Text = '按容量自动识别系统盘'
+$rbAutoDisk.Text = '按容量校验目标磁盘（白名单外拒绝安装）'
 $rbAutoDisk.Location = New-Object System.Drawing.Point(24, 24)
 $rbAutoDisk.AutoSize = $true; $rbAutoDisk.Checked = $true
 $rbAutoDisk.BackColor = [System.Drawing.Color]::Transparent
@@ -190,24 +190,24 @@ $cbMulti.DropDownStyle = 'DropDownList'
 $cbMulti.SelectedIndex = 0
 $tabDisk.Controls.Add($cbMulti)
 
-$lblDetectHint = New-Label $tabDisk '装机时 %pre 扫 /sys/block 实测容量，白名单之外的盘一律排除' 44 86 620
+$lblDetectHint = New-Label $tabDisk '安装前由 %pre 校验目标磁盘容量，480G/960G 之外直接中止，绝不误格' 44 86 620
 $lblDetectHint.ForeColor = [System.Drawing.Color]::DimGray
 $lblDetectHint.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 8)
 
 $rbFixedDisk = New-Object System.Windows.Forms.RadioButton
-$rbFixedDisk.Text = '指定磁盘'
+$rbFixedDisk.Text = '指定磁盘（跳过容量校验）'
 $rbFixedDisk.Location = New-Object System.Drawing.Point(24, 116)
 $rbFixedDisk.AutoSize = $true
 $rbFixedDisk.BackColor = [System.Drawing.Color]::Transparent
 $tabDisk.Controls.Add($rbFixedDisk)
 
 $tbDisk = New-Text $tabDisk 155 113 150 '/dev/sda'
-$tbDisk.Enabled = $false
+$tbDisk.Enabled = $true
 
 $rbAutoDisk.add_CheckedChanged({
     $on = $rbAutoDisk.Checked
     $tbRules.Enabled = $on; $numTol.Enabled = $on; $cbMulti.Enabled = $on
-    $tbDisk.Enabled = -not $on
+    $tbDisk.Enabled = $true
 })
 
 $gbPart = New-Object System.Windows.Forms.GroupBox
