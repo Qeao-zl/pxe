@@ -1,0 +1,22 @@
+# build output / runtime data
+*.exe
+*.iso
+*.ks
+*.log
+
+# runtime folders
+work/
+tftproot/
+www/os/
+www/ks/
+iso/
+logs/
+tftpd/
+
+# kickstart may contain plaintext passwords
+pxe.config.psd1
+
+# os junk
+Thumbs.db
+desktop.ini
+.vscode/
