@@ -326,6 +326,12 @@ menuentry '$label' --class linux --id 'ks-$($meta.File)' {
         for ($i = 0; $i -lt $entries.Count; $i++) {
             if ($entries[$i].IsAuto -and $entries[$i].KsFile -eq $dn) { $defaultIndex = $i; break }
         }
+    } else {
+        # no explicit ks: keep the newest AUTO entry as default, so that importing
+        # another ISO does not silently drop the unattended default the console set
+        for ($i = $entries.Count - 1; $i -ge 0; $i--) {
+            if ($entries[$i].IsAuto) { $defaultIndex = $i; break }
+        }
     }
 
     $header = @"
