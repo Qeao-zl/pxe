@@ -165,48 +165,47 @@ $lblHint.ForeColor = [System.Drawing.Color]::DimGray
 
 # ---------------- 分区 ----------------
 $rbAutoDisk = New-Object System.Windows.Forms.RadioButton
-$rbAutoDisk.Text = '按容量校验目标磁盘（白名单外拒绝安装）'
+$rbAutoDisk.Text = '按容量范围校验目标磁盘'
 $rbAutoDisk.Location = New-Object System.Drawing.Point(24, 24)
 $rbAutoDisk.AutoSize = $true; $rbAutoDisk.Checked = $true
 $rbAutoDisk.BackColor = [System.Drawing.Color]::Transparent
 $tabDisk.Controls.Add($rbAutoDisk)
 
-[void](New-Label $tabDisk '容量白名单(GB)' 44 58 105)
-$tbRules = New-Text $tabDisk 155 55 120 '480, 960'
+[void](New-Label $tabDisk '容量范围(GB)' 44 58 92)
+$numMin = New-Object System.Windows.Forms.NumericUpDown
+$numMin.Location = New-Object System.Drawing.Point(140, 55)
+$numMin.Size = New-Object System.Drawing.Size(80, 25)
+$numMin.Minimum = 8; $numMin.Maximum = 100000; $numMin.Value = 400
+$tabDisk.Controls.Add($numMin)
 
-[void](New-Label $tabDisk '容差(%)' 292 58 60)
-$numTol = New-Object System.Windows.Forms.NumericUpDown
-$numTol.Location = New-Object System.Drawing.Point(356, 55)
-$numTol.Size = New-Object System.Drawing.Size(60, 25)
-$numTol.Minimum = 1; $numTol.Maximum = 30; $numTol.Value = 8
-$tabDisk.Controls.Add($numTol)
+[void](New-Label $tabDisk '到' 230 58 24)
+$numMax = New-Object System.Windows.Forms.NumericUpDown
+$numMax.Location = New-Object System.Drawing.Point(258, 55)
+$numMax.Size = New-Object System.Drawing.Size(80, 25)
+$numMax.Minimum = 8; $numMax.Maximum = 100000; $numMax.Value = 960
+$tabDisk.Controls.Add($numMax)
 
-[void](New-Label $tabDisk '多块命中时' 440 58 82)
-$cbMulti = New-Object System.Windows.Forms.ComboBox
-$cbMulti.Location = New-Object System.Drawing.Point(526, 55)
-$cbMulti.Size = New-Object System.Drawing.Size(140, 25)
-$cbMulti.DropDownStyle = 'DropDownList'
-[void]$cbMulti.Items.AddRange(@('中止安装', '选最小的', '选最大的'))
-$cbMulti.SelectedIndex = 0
-$tabDisk.Controls.Add($cbMulti)
-
-$lblDetectHint = New-Label $tabDisk '安装前由 %pre 校验目标磁盘容量，480G/960G 之外直接中止，绝不误格' 44 86 620
+$lblDetectHint = New-Label $tabDisk '磁盘名要对：SATA/SAS=sda  NVMe=nvme0n1  虚拟盘=vda；%pre 再校验容量，超范围直接中止' 44 86 800
 $lblDetectHint.ForeColor = [System.Drawing.Color]::DimGray
 $lblDetectHint.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 8)
 
 $rbFixedDisk = New-Object System.Windows.Forms.RadioButton
-$rbFixedDisk.Text = '指定磁盘（跳过容量校验）'
+$rbFixedDisk.Text = '指定磁盘'
 $rbFixedDisk.Location = New-Object System.Drawing.Point(24, 116)
 $rbFixedDisk.AutoSize = $true
 $rbFixedDisk.BackColor = [System.Drawing.Color]::Transparent
 $tabDisk.Controls.Add($rbFixedDisk)
 
-$tbDisk = New-Text $tabDisk 155 113 150 '/dev/sda'
+$tbDisk = New-Text $tabDisk 130 113 170 '/dev/sda'
+
+$lblFixedHint = New-Label $tabDisk '（跳过容量校验，直接用这个名字）' 312 113 300
+$lblFixedHint.ForeColor = [System.Drawing.Color]::DimGray
+$lblFixedHint.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 8)
 $tbDisk.Enabled = $true
 
 $rbAutoDisk.add_CheckedChanged({
     $on = $rbAutoDisk.Checked
-    $tbRules.Enabled = $on; $numTol.Enabled = $on; $cbMulti.Enabled = $on
+    $numMin.Enabled = $on; $numMax.Enabled = $on
     $tbDisk.Enabled = $true
 })
 
@@ -327,30 +326,30 @@ $rbCust.add_CheckedChanged({ $tbPkg.Enabled = $rbCust.Checked })
 # ================= 底部 =================
 $bottomBar = New-Object System.Windows.Forms.Panel
 $bottomBar.Dock = 'Bottom'
-$bottomBar.Height = 40
+$bottomBar.Height = 68
 
 $lblStatus = New-Object System.Windows.Forms.Label
-$lblStatus.Location = New-Object System.Drawing.Point(8, 10)
-$lblStatus.Size = New-Object System.Drawing.Size(520, 20)
+$lblStatus.Location = New-Object System.Drawing.Point(8, 6)
+$lblStatus.Size = New-Object System.Drawing.Size(970, 20)
 $lblStatus.Font = New-Object System.Drawing.Font('Consolas', 9)
 $lblStatus.BackColor = [System.Drawing.Color]::Transparent
 $bottomBar.Controls.Add($lblStatus)
 
 $btnRefresh = New-Object System.Windows.Forms.Button
 $btnRefresh.Text = '刷新状态'; $btnRefresh.Size = New-Object System.Drawing.Size(84, 28)
-$btnRefresh.Location = New-Object System.Drawing.Point(540, 6)
+$btnRefresh.Location = New-Object System.Drawing.Point(586, 34)
 $bottomBar.Controls.Add($btnRefresh)
 
 $btnKsDir = New-Object System.Windows.Forms.Button
 $btnKsDir.Text = '打开 ks 目录'; $btnKsDir.Size = New-Object System.Drawing.Size(100, 28)
-$btnKsDir.Location = New-Object System.Drawing.Point(630, 6)
+$btnKsDir.Location = New-Object System.Drawing.Point(680, 34)
 $bottomBar.Controls.Add($btnKsDir)
 $btnKsDir.add_Click({ Start-Process explorer.exe 'C:\PXE\www\ks' })
 
 $btnApply = New-Object System.Windows.Forms.Button
 $btnApply.Text = '生成 ks 并应用到 PXE'
 $btnApply.Size = New-Object System.Drawing.Size(190, 28)
-$btnApply.Location = New-Object System.Drawing.Point(740, 6)
+$btnApply.Location = New-Object System.Drawing.Point(790, 34)
 $btnApply.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 215)
 $btnApply.ForeColor = [System.Drawing.Color]::White
 $btnApply.FlatStyle = 'Flat'
@@ -459,9 +458,8 @@ function New-ConfigFromUi {
         DiskSelect    = if ($rbAutoDisk.Checked) { 'auto' } else { 'fixed' }
         Disk          = $tbDisk.Text.Trim()
         ClearDisk     = [bool]$chkClear.Checked
-        SizeRules     = (($tbRules.Text -replace ',', ' ') -replace '\s+', ' ').Trim()
-        SizeTolerance = [int]$numTol.Value
-        MultiPolicy   = switch ($cbMulti.SelectedIndex) { 0 { 'abort' } 1 { 'min' } 2 { 'max' } }
+        SizeMin       = [int]$numMin.Value
+        SizeMax       = [int]$numMax.Value
         PartMode      = if ($rbManual.Checked) { 'manual' } else { 'auto' }
         Parts         = $parts
         PkgMode       = if ($rbCust.Checked) { 'custom' } elseif ($rbGui.Checked) { 'gui' } else { 'minimal' }
@@ -470,7 +468,7 @@ function New-ConfigFromUi {
     }
 
     if ($cfg.DiskSelect -eq 'auto') {
-        if ($cfg.SizeRules -notmatch '^\d+(\s+\d+)*$') { throw '容量白名单格式不对，应形如 480 960' }
+        if ($cfg.SizeMin -ge $cfg.SizeMax) { throw '容量范围下限必须小于上限' }
     } elseif (-not $cfg.Disk) {
         throw '指定磁盘时磁盘名不能为空'
     }
