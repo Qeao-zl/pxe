@@ -23,7 +23,7 @@
 |---|---|
 | **One-command install** | `install.ps1` provisions DHCP, IIS, TFTP, firewall rules, self-healing tasks and desktop shortcuts |
 | **Zero-touch clients** | The console writes a kickstart and makes it the default GRUB entry — the client installs after an 8 s countdown |
-| **System disk auto-detect** | `%pre` picks the disk by **capacity** (480 G / 960 G profiles), any other disk size is excluded |
+| **System disk guard** | `%pre` checks the target disk capacity against a **400-960 GB** range (editable) and aborts outside it |
 | **Custom partitioning** | Add rows in a grid: mount point, size, filesystem, grow-to-fill |
 | **Survives reboots** | `PXE-Health` re-creates the IP, services, site, TFTP process and firewall rules at every boot |
 | **No third-party runtime** | The TFTP server is ~200 lines of C# compiled at install time — no tftpd32, no Nginx, no WSL |
@@ -90,6 +90,60 @@ sequenceDiagram
 
 ---
 
+## Two scenarios: physical servers vs. virtual machines
+
+The stack serves **one subnet** - whichever layer-2 segment its provisioning NIC sits on. Every
+machine that boots from it has to share that segment, and the install source URL is baked into the
+GRUB menu, so a different subnet needs a different menu.
+
+| | Physical server (production) | VM self-test (on this laptop) |
+|---|---|---|
+| Segment | `10.0.0.0/24` - `VMnet0` bridged to the wired NIC, isolated switch | `192.168.100.0/24` - `VMnet2` host-only |
+| Server address | `10.0.0.1` (built-in default) | `192.168.100.10` |
+| Boot file | `grubaa64.efi` (ARM64) / `grubx64.efi` (x64) | `grubx64.efi` |
+| Disk name | `sda` on a SAS/SATA backplane, `nvme0n1` on NVMe | `nvme0n1` on VMware NVMe, `sda` on a SATA disk |
+| How it starts | BMC one-time PXE, or BIOS boot order | UEFI Boot Manager -> *EFI Network* |
+
+### Physical server
+
+1. Wire the server and the Windows host into an **isolated** switch - no uplink to the office LAN,
+   otherwise this DHCP server will answer office machines too.
+2. In the BMC set a one-time PXE boot and power on:
+
+```http
+PATCH /redfish/v1/Systems/1     (Basic auth, or X-Auth-Token from
+                                 POST /redfish/v1/SessionService/Sessions)
+
+{"Boot":{"BootSourceOverrideTarget":"Pxe",
+         "BootSourceOverrideEnabled":"Once",
+         "BootSourceOverrideMode":"UEFI"}}
+```
+
+   On Huawei iBMC the PATCH can answer `412` and still apply the override - read the resource back
+   and check `BootSourceOverrideTarget` is `Pxe`. The override is only accepted while the system is
+   powered off, so `ForceOff` first if needed.
+
+3. The server leases `10.0.0.1xx`, loads GRUB, waits 8 s, installs and reboots into the new system.
+4. Set the disk name in the console to match the hardware (`sda` / `nvme0n1` / `vda`).
+
+### Virtual machine self-test
+
+1. Create the VM with **host-only VMnet2**, **UEFI** firmware, an **e1000e** NIC and a **480 GB**
+   thin disk. The `%pre` range check rejects anything outside 400-960 GB, and `vmxnet3` is
+   unreliable for UEFI PXE.
+2. Point the install source at the VMnet2 address instead of the production one:
+   - generate the kickstart with `ServerIp = 192.168.100.10`
+   - add a `grub.cfg-01-<mac>` file next to `grub.cfg` with `10.0.0.1` replaced by `192.168.100.10`
+     (GRUB asks for that per-MAC file first; the TFTP server aliases any missing `grub.cfg-*` to the
+     main menu, so an existing file wins)
+3. Boot the VM, choose **EFI Network**, and it installs exactly like a physical machine.
+4. VMware reports an NVMe disk as `nvme0n1` and a SATA disk as `sda` - a wrong name fails at parse
+   time with `Disk "sda" given in ignoredisk command does not exist`.
+
+> Test VM and production servers on different subnets cannot share one menu. Either put the test VM
+> on the production segment, or keep the per-MAC menu described above.
+
+---
 ## Requirements
 
 - Windows Server **2016 / 2019 / 2022**, run as **Administrator**
@@ -191,36 +245,33 @@ default, and flips the DHCP boot file to match the selected architecture.
 
 ---
 
-## System disk detection
+## System disk: range check, not selection
 
-The PXE server cannot see the client's disks — the OS is not installed yet. So the decision runs
-**inside the installer**, in the kickstart `%pre` section:
+anaconda resolves `%include` **while parsing the kickstart**, before `%pre` runs, so a partition
+file generated at runtime can never be included. An earlier version of this project did exactly
+that and the installer aborted with:
+
+```
+Unable to open input kickstart file: Error opening file: [Errno 2]
+No such file or directory: '/tmp/pxe-part.ks'
+```
+
+Partitioning therefore targets a **fixed device** and `%pre` only *verifies* its capacity:
 
 ```mermaid
 flowchart TD
-    A["%pre scans /sys/block/*"] --> B["size × 512 = bytes"]
-    B --> C{"480 G ±8%<br/>or 960 G ±8%?"}
-    C -- no --> D["excluded<br/>(2 TB data disks etc.)"]
-    C -- yes --> E["candidate"]
-    E --> F{"how many candidates?"}
-    F -- none --> X["exit 1<br/>abort, never guess"]
-    F -- one --> G["use it"]
-    F -- many --> H{"policy"}
-    H -- abort --> X
-    H -- min --> I["smallest"]
-    H -- max --> J["largest"]
-    G --> K["write /tmp/pxe-part.ks"]
-    I --> K
-    J --> K
-    K --> L["%include applies the partition table"]
+    A["%pre runs before partitioning"] --> B["read /sys/block/&lt;target&gt;/size"]
+    B --> C{"within min-max range?<br/>default 400-960 GB"}
+    C -- yes --> D["continue with clearpart + part"]
+    C -- no --> E["print PXE-FATAL plus the real disk list<br/>exit 1 - nothing is written"]
 ```
 
-- Whitelist and tolerance are editable in the console (`480, 960` and `8%` by default)
-- The generated `%pre` must stay **before** `%include` — anaconda executes pre scripts while parsing
-- Nothing matches → the installer aborts with a readable message instead of wiping the wrong disk
+- The accepted range is editable in the console (default **400-960 GB**)
+- The device name must match the hardware: SATA/SAS `sda`, NVMe `nvme0n1`, virtio `vda`.
+  A wrong name fails early with `Disk "sda" given in ignoredisk command does not exist`
+- Anything outside the range aborts the install instead of wiping a data disk
 
 ---
-
 ## Boot-time self-healing
 
 | Component | How it comes back |
@@ -279,6 +330,10 @@ C:\PXE
 | `multiple candidate disks` | Several 480/960 G disks present — set the policy to min/max, or pin the disk |
 | `%include: file not found` | `%pre` ended up after `%include` — regenerate the kickstart with the console |
 | Install source 404 | IIS site state, `www\os\<slug>` presence, missing MIME mapping |
+| `Disk "sda" ... does not exist` | Wrong device name - NVMe boards use `nvme0n1`, virtio uses `vda` |
+| `Failed to download ... libstdc++` / 404.11 | IIS rejects `%2B%2B`; set `requestFiltering allowDoubleEscaping=true` |
+| Kylin GRUB stops at `Press y to enter the system` | Kylin`s `libkytrusted` hook cannot write `.bimalog` over read-only TFTP - serve `grubx64.efi`/`grubaa64.efi` from openEuler instead |
+| VM install hangs at `setting up installation source` | Menu still points at the production `10.0.0.1` while the VM sits on `VMnet2`; generate the kickstart with `ServerIp 192.168.100.10` and add a per-MAC `grub.cfg-01-<mac>` |
 | Reboot loops back into PXE | Firmware prefers network boot. The kickstart `%post` already pushes the local EFI entry first; otherwise fix the BIOS boot order |
 
 ---

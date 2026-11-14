@@ -23,7 +23,7 @@
 |---|---|
 | **一条命令部署** | `install.ps1` 装好 DHCP、IIS、TFTP、防火墙、自愈任务和桌面快捷方式 |
 | **客户端零操作** | 控制台生成 kickstart 并设为 GRUB 默认项，目标机倒计时 8 秒后自动开装 |
-| **系统盘自动识别** | `%pre` 按**容量**挑盘（480G / 960G 两档），其他容量一律排除 |
+| **系统盘容量校验** | `%pre` 校验目标磁盘容量是否落在 **400-960 GB** 区间（可改），超出直接中止 |
 | **自定义分区** | 表格加行即可：挂载点、容量、文件系统、是否占满剩余 |
 | **重启不丢服务** | `PXE-Health` 每次开机自动补齐 IP、服务、站点、TFTP 进程和防火墙规则 |
 | **无第三方运行时** | TFTP 服务是约 200 行 C#，安装时编译，不用 tftpd32、不用 Nginx、不用 WSL |
@@ -90,6 +90,57 @@ sequenceDiagram
 
 ---
 
+## 两种场景：物理机装机 与 虚拟机自测
+
+这套服务一次只服务**一个网段**——它装机网卡所在的那个二层域。所有从它启动的机器都必须和它同段；
+而安装源地址是写死在 GRUB 菜单里的，所以换网段就要换菜单。
+
+| | 物理机（生产） | 虚拟机（本机自测） |
+|---|---|---|
+| 网段 | `10.0.0.0/24`，`VMnet0` 桥接到有线网卡，接隔离交换机 | `192.168.100.0/24`，`VMnet2` 仅主机 |
+| 服务端地址 | `10.0.0.1`（工具默认） | `192.168.100.10` |
+| 引导文件 | `grubaa64.efi`（ARM64）/ `grubx64.efi`（x64） | `grubx64.efi` |
+| 磁盘名 | SAS/SATA 背板是 `sda`，NVMe 是 `nvme0n1` | VMware NVMe 是 `nvme0n1`，SATA 虚拟盘是 `sda` |
+| 怎么启动 | BMC 设一次性 PXE，或改 BIOS 启动顺序 | UEFI Boot Manager 里选 *EFI Network* |
+
+### 物理机
+
+1. 服务器和 Windows 主机都接到**隔离交换机**，不要上联办公网，否则本机 DHCP 会应答办公电脑。
+2. 在 BMC 里设一次性 PXE 启动，然后上电：
+
+```http
+PATCH /redfish/v1/Systems/1     （Basic 认证，或用 X-Auth-Token：
+                                 先 POST /redfish/v1/SessionService/Sessions）
+
+{"Boot":{"BootSourceOverrideTarget":"Pxe",
+         "BootSourceOverrideEnabled":"Once",
+         "BootSourceOverrideMode":"UEFI"}}
+```
+
+   华为 iBMC 上这个 PATCH 可能返回 `412` 但实际已生效——读回来确认
+   `BootSourceOverrideTarget` 是 `Pxe` 即可。该设置只在**关机状态**下才能改，
+   需要的话先 `ForceOff`。
+
+3. 服务器拿到 `10.0.0.1xx` → 加载 GRUB → 8 秒后自动安装 → 装完重启进新系统。
+4. 控制台里的磁盘名要按硬件填（`sda` / `nvme0n1` / `vda`）。
+
+### 虚拟机自测
+
+1. 建虚拟机时选：**仅主机 VMnet2**、**UEFI** 固件、**e1000e** 网卡、**480 GB** 精简磁盘。
+   容量校验只接受 400-960 GB，且 `vmxnet3` 在 UEFI PXE 下经常起不来。
+2. 安装源要指向 VMnet2 的地址，而不是生产的：
+   - 生成 ks 时把 `ServerIp` 设为 `192.168.100.10`
+   - 在 `grub.cfg` 旁边放一份 `grub.cfg-01-<MAC>`，内容把 `10.0.0.1` 全替换成 `192.168.100.10`
+     （GRUB 会先请求这个按 MAC 命名的文件；TFTP 对缺失的 `grub.cfg-*` 会回落到主菜单，
+     所以存在的那份优先）
+3. 开机进 Boot Manager 选 **EFI Network**，之后和物理机完全一样。
+4. VMware 的 NVMe 盘在系统里叫 `nvme0n1`，SATA 盘才是 `sda`；名字填错会在解析阶段直接报
+   `Disk "sda" given in ignoredisk command does not exist`。
+
+> 测试虚拟机和生产服务器不同网段时，不可能共用同一份菜单。要么把测试机接进生产网段，
+> 要么就按上面的办法单独给它一份按 MAC 的菜单。
+
+---
 ## 环境要求
 
 - Windows Server **2016 / 2019 / 2022**，以**管理员**身份运行
@@ -190,36 +241,32 @@ Set-DhcpServerv4OptionValue -ScopeId 10.0.0.0 -OptionId 67 -Value grubx64.efi
 
 ---
 
-## 系统盘容量识别
+## 系统盘：区间校验，而不是自动挑选
 
-PXE 服务器看不到目标机磁盘（系统还没装），所以判定放在 kickstart 的 `%pre` 里，
-在装机瞬间执行：
+anaconda 在**解析 kickstart 时**就展开 `%include`，早于 `%pre` 执行，所以运行时生成的分区文件
+永远来不及被引用。早期版本正是这么做的，安装器直接中止：
+
+```
+Unable to open input kickstart file: Error opening file: [Errno 2]
+No such file or directory: '/tmp/pxe-part.ks'
+```
+
+因此分区改为**固定目标磁盘**，`%pre` 只负责**校验容量**：
 
 ```mermaid
 flowchart TD
-    A["%pre 遍历 /sys/block/*"] --> B["size × 512 = 字节数"]
-    B --> C{"命中 480G ±8%<br/>或 960G ±8%?"}
-    C -- 否 --> D["排除<br/>（2T 数据盘等）"]
-    C -- 是 --> E["候选盘"]
-    E --> F{"候选数量"}
-    F -- 0 --> X["exit 1<br/>中止安装，绝不瞎装"]
-    F -- 1 --> G["直接使用"]
-    F -- 多块 --> H{"策略"}
-    H -- 中止 --> X
-    H -- 选最小 --> I["最小的那块"]
-    H -- 选最大 --> J["最大的那块"]
-    G --> K["写 /tmp/pxe-part.ks"]
-    I --> K
-    J --> K
-    K --> L["%include 应用分区表"]
+    A["%pre 在分区前运行"] --> B["读 /sys/block/&lt;target&gt;/size"]
+    B --> C{"落在最小-最大区间内？<br/>默认 400-960 GB"}
+    C -- 是 --> D["继续 clearpart + part"]
+    C -- 否 --> E["打印 PXE-FATAL 和真实磁盘列表<br/>exit 1，一个字节都不写"]
 ```
 
-- 白名单和容差都在控制台改（默认 `480, 960`、`8%`）
-- 生成的 `%pre` 必须排在 `%include` **之前**，anaconda 是边解析边执行 pre 脚本的
-- 一块都没命中时安装会带明确报错中止，而不是把别处的盘格掉
+- 区间在控制台可改（默认 **400-960 GB**）
+- 设备名必须对得上硬件：SATA/SAS `sda`、NVMe `nvme0n1`、virtio `vda`。
+  名字错了会在解析阶段直接报 `Disk "sda" given in ignoredisk command does not exist`
+- 超出区间就中止安装，而不是把数据盘格了
 
 ---
-
 ## 开机自愈
 
 | 组件 | 恢复方式 |
@@ -278,6 +325,10 @@ C:\PXE
 | `multiple candidate disks` | 存在多块 480/960G 盘 —— 策略改选最小/最大，或直接指定磁盘 |
 | `%include: file not found` | `%pre` 被排到了 `%include` 后面 —— 用控制台重新生成 |
 | 安装源 404 | IIS 站点状态、`www\os\<slug>` 是否存在、MIME 映射是否缺 |
+| `Disk "sda" ... does not exist` | 设备名不对：NVMe 主板用 `nvme0n1`，virtio 用 `vda` |
+| `Failed to download ... libstdc++` / 404.11 | IIS 拒绝 `%2B%2B`，需开启 `requestFiltering allowDoubleEscaping=true` |
+| 麒麟 GRUB 停在 `Press y to enter the system` | 麒麟 `libkytrusted` 钩子写不了只读 TFTP 上的 `.bimalog`，改用 openEuler 的 `grubx64.efi` / `grubaa64.efi` |
+| 虚拟机装系统卡在「设置安装源」 | 菜单里还是生产的 `10.0.0.1`，而虚拟机在 `VMnet2`；用 `ServerIp 192.168.100.10` 重新生成 ks，并补一份按 MAC 的 `grub.cfg-01-<mac>` |
 | 重启又进 PXE 循环 | 固件强制网络优先。kickstart 的 `%post` 已把本地 EFI 引导项置顶；否则改 BIOS 启动顺序 |
 
 ---
