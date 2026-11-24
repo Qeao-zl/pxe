@@ -314,6 +314,53 @@ C:\PXE
 
 ---
 
+## ARM64 服务器：四个踩过的坑
+
+### 1. 麒麟要用 openEuler 的 GRUB，不能用它自带的
+
+麒麟自带的 GRUB 编译进了 `libkytrusted` 可信启动钩子：它要求读到一份合法的
+`/EFI/BOOT/.libkytrusted-security.conf`，并把度量日志写到 `.bimalog`。PXE 的 TFTP 是只读的，写不进去，
+启动就停在这里：
+
+```
+The .libkytrusted-security.conf not available, no trust measurement was performed during the boot phase.
+please choose the way to handle it
+Press y to enter the system and press any other key to restart the system...
+```
+
+按 `y` 能继续，但那就不是无人值守了。改用 **openEuler 的 `grubaa64.efi`** 可以完全避开这个钩子——
+openEuler 的 GRUB 加载麒麟内核没有任何问题。
+
+### 2. 但 openEuler 的 GRUB 没有 `linuxefi`
+
+它是上游 GRUB，只认 `linux` / `initrd`。菜单里如果写 RHEL 风格的 `linuxefi` / `initrdefi`，会报：
+
+```
+error: ../../grub-core/script/function.c:119:can't find command `linuxefi'.
+error: ../../grub-core/script/function.c:119:can't find command `initrdefi'.
+```
+
+本项目现在统一生成标准 `linux` / `initrd`，两种 GRUB 都能用。
+
+### 3. RAID 卡上必须先建逻辑卷
+
+在一台 PR210K PRO 上遇到：RAID 卡下挂着两块 480 GB SATA SSD，但**一个逻辑卷都没有**。
+BMC 里 `Drives@odata.count: 0`、`Volumes: 0`，于是操作系统里根本没有 `sda`，anaconda 直接报
+`Disk "sda" given in ignoredisk command does not exist`。所以装机前先在 BMC/BIOS 里建卷
+（两块 480G 做 RAID1 会得到一块 480G 的 `sda`，正好落在 400-960 GB 区间内）。
+
+### 4. 前 4 分钟屏幕是黑的，属正常
+
+选完菜单后 GRUB 要先拉内核和 initrd（约 88 MB，走 TFTP），然后内核解压、探测硬件。
+4 路 ARM + 1 TB 内存的机器这一段大约 2 分钟，**期间控制台没有任何输出**。这行
+
+```
+execute_ipmi_cmd failed, request sub_cmd:89, ret:9223372036854775809
+```
+
+是内核早期调 IPMI 失败的噪音，无害。从菜单到安装界面，按 4 分钟预期。
+
+---
 ## 排错
 
 | 现象 | 原因 / 处理 |
@@ -325,10 +372,12 @@ C:\PXE
 | `multiple candidate disks` | 存在多块 480/960G 盘 —— 策略改选最小/最大，或直接指定磁盘 |
 | `%include: file not found` | `%pre` 被排到了 `%include` 后面 —— 用控制台重新生成 |
 | 安装源 404 | IIS 站点状态、`www\os\<slug>` 是否存在、MIME 映射是否缺 |
-| `Disk "sda" ... does not exist` | 设备名不对：NVMe 主板用 `nvme0n1`，virtio 用 `vda` |
+| `Disk "sda" ... does not exist` | 设备名不对（NVMe = `nvme0n1`，virtio = `vda`），**或者 RAID 卡上没有逻辑卷**——去 BMC 存储视图确认 |
 | `Failed to download ... libstdc++` / 404.11 | IIS 拒绝 `%2B%2B`，需开启 `requestFiltering allowDoubleEscaping=true` |
 | 麒麟 GRUB 停在 `Press y to enter the system` | 麒麟 `libkytrusted` 钩子写不了只读 TFTP 上的 `.bimalog`，改用 openEuler 的 `grubx64.efi` / `grubaa64.efi` |
 | 虚拟机装系统卡在「设置安装源」 | 菜单里还是生产的 `10.0.0.1`，而虚拟机在 `VMnet2`；用 `ServerIp 192.168.100.10` 重新生成 ks，并补一份按 MAC 的 `grub.cfg-01-<mac>` |
+| 报 `can't find command 'linuxefi'` | 菜单是给 RHEL 系 GRUB 写的，被上游 GRUB 解析了；重新生成（本版本输出 `linux` / `initrd`） |
+| 停在 `Booting ...` 好几分钟 | 正常：88 MB 内核+initrd 走 TFTP，随后是静默的硬件探测，按 4 分钟预期 |
 | 重启又进 PXE 循环 | 固件强制网络优先。kickstart 的 `%post` 已把本地 EFI 引导项置顶；否则改 BIOS 启动顺序 |
 
 ---

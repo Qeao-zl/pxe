@@ -319,6 +319,55 @@ C:\PXE
 
 ---
 
+## ARM64 servers: four things that cost us a day
+
+### 1. Kylin needs the openEuler GRUB, not its own
+
+Kylin ships a GRUB with a `libkytrusted` hook. It insists on reading a valid
+`/EFI/BOOT/.libkytrusted-security.conf` and writing a measurement log to `.bimalog` over TFTP; when it
+cannot, boot stops at:
+
+```
+The .libkytrusted-security.conf not available, no trust measurement was performed during the boot phase.
+please choose the way to handle it
+Press y to enter the system and press any other key to restart the system...
+```
+
+Pressing `y` gets past it, but that is not unattended. Serving `grubaa64.efi` from **openEuler** avoids the
+hook completely - openEuler GRUB loads a Kylin kernel without complaint.
+
+### 2. ...but the openEuler GRUB has no `linuxefi`
+
+It is upstream GRUB and only knows `linux` / `initrd`. A menu written with the RHEL-style
+`linuxefi` / `initrdefi` fails with:
+
+```
+error: ../../grub-core/script/function.c:119:can't find command `linuxefi'.
+error: ../../grub-core/script/function.c:119:can't find command `initrdefi'.
+```
+
+This project now emits standard `linux` / `initrd`, which works on both GRUB flavours.
+
+### 3. The RAID controller must have a logical volume
+
+On a PR210K PRO we found two 480 GB SATA SSDs on a RAID card with **zero volumes**: the BMC reported
+`Drives@odata.count: 0` under the storage resource and `Volumes: 0`, so Linux saw no `sda` at all and
+anaconda aborted with `Disk "sda" given in ignoredisk command does not exist`. Create the VD first
+(RAID1 over the two 480 GB disks yields one 480 GB `sda`, which also satisfies the 400-960 GB range).
+
+### 4. The first ~4 minutes are silent
+
+After the menu selection GRUB pulls the kernel and initrd (~88 MB over TFTP), then the kernel decompresses
+and probes hardware. On a 4-socket ARM server with 1 TB RAM that takes about two minutes with **no console
+output**. A line such as
+
+```
+execute_ipmi_cmd failed, request sub_cmd:89, ret:9223372036854775809
+```
+
+is harmless noise from the kernel's early IPMI call. Budget ~4 minutes from menu to installer.
+
+---
 ## Troubleshooting
 
 | Symptom | Cause / fix |
@@ -330,10 +379,12 @@ C:\PXE
 | `multiple candidate disks` | Several 480/960 G disks present — set the policy to min/max, or pin the disk |
 | `%include: file not found` | `%pre` ended up after `%include` — regenerate the kickstart with the console |
 | Install source 404 | IIS site state, `www\os\<slug>` presence, missing MIME mapping |
-| `Disk "sda" ... does not exist` | Wrong device name - NVMe boards use `nvme0n1`, virtio uses `vda` |
+| `Disk "sda" ... does not exist` | Wrong device name (NVMe = `nvme0n1`, virtio = `vda`), **or** the RAID controller has no logical volume - check the BMC storage view |
 | `Failed to download ... libstdc++` / 404.11 | IIS rejects `%2B%2B`; set `requestFiltering allowDoubleEscaping=true` |
 | Kylin GRUB stops at `Press y to enter the system` | Kylin`s `libkytrusted` hook cannot write `.bimalog` over read-only TFTP - serve `grubx64.efi`/`grubaa64.efi` from openEuler instead |
 | VM install hangs at `setting up installation source` | Menu still points at the production `10.0.0.1` while the VM sits on `VMnet2`; generate the kickstart with `ServerIp 192.168.100.10` and add a per-MAC `grub.cfg-01-<mac>` |
+| `can't find command 'linuxefi'` | Menu written for RHEL GRUB is being parsed by upstream GRUB; regenerate it (this version emits `linux` / `initrd`) |
+| Stuck on `Booting ...` for minutes | Normal: ~88 MB kernel+initrd over TFTP, then a silent hardware probe - allow ~4 minutes |
 | Reboot loops back into PXE | Firmware prefers network boot. The kickstart `%post` already pushes the local EFI entry first; otherwise fix the BIOS boot order |
 
 ---
